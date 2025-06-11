@@ -80,23 +80,24 @@ def monitor_sbatch(cmd: list):
             sys.exit(1)
 
     host = os.uname().nodename
+    pwd = os.getcwd()
     send_slack(
-        f"✅ *Slurm job* `{jobid}` finished on `{host}` at `{time.ctime()}`\n"
-        f"*Command:* {' '.join(cmd)}\n"
+        f"✅ *Slurm job* `{jobid}` finished on `{host}`\n"
+        f"*{pwd}*\n"
+        f"*Command:* `{' '.join(cmd)}`\n"
         f"```\n{script_content.strip()}\n```"
     )
 
 
-def monitor_command(cmd: list):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=os.environ, text=True)
-    pid = proc.pid
-    print(f"Running PID {pid}: {' '.join(cmd)}")
-
+def monitor_command(cmd_str: str):
+    proc = subprocess.Popen(cmd_str, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                          env=os.environ, text=True, shell=True)
     combined_output, _ = proc.communicate()
 
     host = os.uname().nodename
+    pwd = os.getcwd()
     output = combined_output.strip() or "(no output)"
-    output_msg = f"✅ *<{host}|{host}:>* `{' '.join(cmd)}`\n```\n{output}\n```"
+    output_msg = f"✅ *<{host}|{host}:>*\n_{pwd}_\n`{cmd_str}`\n```\n{output}\n```"
 
     send_slack(output_msg)
 
@@ -106,11 +107,22 @@ def main():
         print("Usage: monitor <command>")
         sys.exit(1)
 
-    cmd = sys.argv[1:]
-    if cmd[0] == "sbatch":
-        monitor_sbatch(cmd)
-    else:
-        monitor_command(cmd)
+    if not os.environ.get('NOUP_RUNNING'):
+        # Join all args into a single string
+        cmd_str = ' '.join(sys.argv[1:])
+        os.environ['NOUP_RUNNING'] = '1'
+        # Pass the command as a single quoted string
+        subprocess.Popen(
+            f'nohup {sys.executable} {__file__} "{cmd_str}" > /dev/null 2>&1 &',
+            shell=True,
+            env=os.environ
+        )
+        print(f"Started monitoring in background")
+        sys.exit(0)
+
+    # Now sys.argv[1] is the full command string
+    cmd_str = sys.argv[1]
+    monitor_command(cmd_str)
 
 
 if __name__ == "__main__":
