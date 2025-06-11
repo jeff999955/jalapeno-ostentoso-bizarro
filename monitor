@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+
+import subprocess
+import time
+import sys
+import os
+import re
+from pathlib import Path
+from datetime import datetime
+
+POLL_INTERVAL = 30  # seconds
+MAX_SCRIPT_LINES = 50
+
+
+def get_webhook_url():
+    url = os.getenv("NOTIFIER_URL")
+    if not url:
+        print("❌ Environment variable NOTIFIER_URL not set.")
+        sys.exit(1)
+    return url
+
+
+def send_slack(text: str):
+    url = get_webhook_url()
+    subprocess.run([
+        "curl", "-X", "POST", "-H", "Content-type: application/json",
+        "--data", f'{{"text": "{text}"}}',
+        url
+    ])
+
+
+def extract_jobid(output: str):
+    match = re.search(r"Submitted batch job (\d+)", output)
+    return match.group(1) if match else None
+
+
+def monitor_sbatch(cmd: list):
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        print("sbatch failed:\n", result.stderr)
+        send_slack(f"❌ sbatch failed:\n```{result.stderr.strip()}```")
+        sys.exit(1)
+
+    print(result.stdout.strip())
+    jobid = extract_jobid(result.stdout)
+    if not jobid:
+        print("❌ Failed to extract job ID from sbatch output.")
+        sys.exit(1)
+
+    script_path = Path(cmd[1]) if len(cmd) > 1 and Path(cmd[1]).exists() else None
+    if script_path:
+        with open(script_path) as f:
+            script_content = "".join(f.readlines()[:MAX_SCRIPT_LINES])
+    else:
+        script_content = f"(Script file not found: {cmd[1]})"
+
+    while True:
+        try:
+            squeue_out = subprocess.run(["squeue", "-j", jobid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            if jobid not in squeue_out.stdout:
+                break
+            time.sleep(POLL_INTERVAL)
+        except KeyboardInterrupt:
+            print("\nMonitoring interrupted.")
+            sys.exit(1)
+
+    host = os.uname().nodename
+    send_slack(
+        f"✅ *Slurm job* `{jobid}` finished on `{host}` at `{time.ctime()}`\n"
+        f"*Command:* {' '.join(cmd)}\n```
+{script_content.strip()}
+```"
+    )
+
+
+def monitor_command(cmd: list):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=os.environ, text=True)
+    pid = proc.pid
+    print(f"Running PID {pid}: {' '.join(cmd)}")
+
+    combined_output, _ = proc.communicate()
+
+    host = os.uname().nodename
+    output_msg = f"✅ *{host}:* {' '.join(cmd)}\n```
+{combined_output.strip()}
+```"
+
+    send_slack(output_msg)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: monitor <command>")
+        sys.exit(1)
+
+    cmd = sys.argv[1:]
+    if cmd[0] == "sbatch":
+        monitor_sbatch(cmd)
+    else:
+        monitor_command(cmd)
+
+
+if __name__ == "__main__":
+    subprocess.Popen([sys.executable] + sys.argv, env=os.environ,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    print("Monitor detached. Running in background with no logs.")
+    sys.exit(0)
