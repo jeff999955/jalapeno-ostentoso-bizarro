@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
+import json
 
 POLL_INTERVAL = 30  # seconds
 MAX_SCRIPT_LINES = 50
@@ -22,11 +23,25 @@ def get_webhook_url():
 
 def send_slack(text: str):
     url = get_webhook_url()
+    # Build a Block Kit payload for mrkdwn formatting
+    payload = {
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": text
+                }
+            }
+        ]
+    }
+    # Use --data-raw to send unaltered JSON; json.dumps escapes properly
     subprocess.run([
-        "curl", "-X", "POST", "-H", "Content-type: application/json",
-        "--data", f'{{"text": "{text}"}}',
+        "curl", "-X", "POST",
+        "-H", "Content-Type: application/json; charset=utf-8",
+        "--data-raw", json.dumps(payload),
         url
-    ])
+    ], check=True)
 
 
 def extract_jobid(output: str):
@@ -67,9 +82,8 @@ def monitor_sbatch(cmd: list):
     host = os.uname().nodename
     send_slack(
         f"✅ *Slurm job* `{jobid}` finished on `{host}` at `{time.ctime()}`\n"
-        f"*Command:* {' '.join(cmd)}\n```
-{script_content.strip()}
-```"
+        f"*Command:* {' '.join(cmd)}\n"
+        f"```\n{script_content.strip()}\n```"
     )
 
 
@@ -81,9 +95,8 @@ def monitor_command(cmd: list):
     combined_output, _ = proc.communicate()
 
     host = os.uname().nodename
-    output_msg = f"✅ *{host}:* {' '.join(cmd)}\n```
-{combined_output.strip()}
-```"
+    output = combined_output.strip() or "(no output)"
+    output_msg = f"✅ *<{host}|{host}:>* `{' '.join(cmd)}`\n```\n{output}\n```"
 
     send_slack(output_msg)
 
@@ -101,7 +114,4 @@ def main():
 
 
 if __name__ == "__main__":
-    subprocess.Popen([sys.executable] + sys.argv, env=os.environ,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    print("Monitor detached. Running in background with no logs.")
-    sys.exit(0)
+    main()
