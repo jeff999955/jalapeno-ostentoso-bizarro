@@ -91,13 +91,34 @@ def monitor_sbatch(cmd: list):
 
 def monitor_command(cmd_str: str):
     proc = subprocess.Popen(cmd_str, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                          env=os.environ, text=True, shell=True)
-    combined_output, _ = proc.communicate()
+                          env=os.environ, text=True, shell=True, bufsize=1)
+    
+    # Read output in chunks to handle large outputs
+    chunks = []
+    while True:
+        chunk = proc.stdout.read(8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    
+    combined_output = ''.join(chunks)
+    proc.wait()
+
+    # Save full output to log file
+    log_file = f"monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    with open(log_file, "w") as f:
+        f.write(combined_output)
+
+    # Truncate output for Slack (keeping first and last 1000 chars)
+    MAX_SLACK_LENGTH = 2000
+    if len(combined_output) > MAX_SLACK_LENGTH:
+        truncated = combined_output[:1000] + "\n...\n" + combined_output[-1000:]
+    else:
+        truncated = combined_output
 
     host = os.uname().nodename
     pwd = os.getcwd()
-    output = combined_output.strip() or "(no output)"
-    output_msg = f"✅ *<{host}|{host}:>*\n_{pwd}_\n`{cmd_str}`\n```\n{output}\n```"
+    output_msg = f"✅ *<{host}|{host}:>*\n_{pwd}_\n`{cmd_str}`\n```\n{truncated}\n```\nFull output saved to: `{log_file}`"
 
     send_slack(output_msg)
 
