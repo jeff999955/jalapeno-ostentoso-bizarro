@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from datetime import datetime
 import json
+import urllib.request
+import urllib.error
 
 POLL_INTERVAL = 30  # seconds
 MAX_SCRIPT_LINES = 50
@@ -20,28 +22,35 @@ def get_webhook_url():
         sys.exit(1)
     return url
 
+class Response:
+    def __init__(self, text: str, status: str):
+        self.text = text
+        self.status = status
 
 def send_slack(text: str):
-    url = get_webhook_url()
-    # Build a Block Kit payload for mrkdwn formatting
-    payload = {
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": text
+    try:
+        url = get_webhook_url()
+        # Build a Block Kit payload for mrkdwn formatting
+        payload = {
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": text
+                    }
                 }
-            }
-        ]
-    }
-    # Use --data-raw to send unaltered JSON; json.dumps escapes properly
-    subprocess.run([
-        "curl", "-X", "POST",
-        "-H", "Content-Type: application/json; charset=utf-8",
-        "--data-raw", json.dumps(payload),
-        url
-    ], check=True)
+            ]
+        }
+        data = json.dumps(payload).encode('utf-8')
+        headers = {'Content-Type': 'application/json; charset=utf-8'}
+        
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            response.read()  # Read response to ensure request completed
+        return Response(text, "success")
+    except Exception as e:
+        return Response(f"❌ Failed to send Slack notification: {e}", "error")
 
 
 def extract_jobid(output: str):
@@ -109,19 +118,14 @@ def monitor_command(cmd_str: str):
     with open(log_file, "w") as f:
         f.write(combined_output)
 
-    # Truncate output for Slack (keeping first and last 1000 chars)
-    MAX_SLACK_LENGTH = 2000
-    if len(combined_output) > MAX_SLACK_LENGTH:
-        truncated = combined_output[:1000] + "\n...\n" + combined_output[-1000:]
-    else:
-        truncated = combined_output
-
     host = os.uname().nodename
     pwd = os.getcwd()
-    output_msg = f"✅ *<{host}|{host}:>*\n_{pwd}_\n`{cmd_str}`\n```\n{truncated}\n```\nFull output saved to: `{log_file}`"
+    output_msg = f"✅ *<{host}|{host}:>*\n_{pwd}_\n`{cmd_str}`\nFull output saved to: `{log_file}`"
 
-    send_slack(output_msg)
-
+    response = send_slack(output_msg)
+    if response.status == "error":
+        with open(log_file, "w+") as f:
+            f.write(response.text)
 
 def main():
     if len(sys.argv) < 2:
